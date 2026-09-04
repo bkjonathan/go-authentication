@@ -1,0 +1,49 @@
+name: Release Go Backend
+
+# 1. This tells GitHub to ONLY run this action when you push a tag starting with "v"
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 2. Crucial: Gives the action permission to upload files to the Releases page
+permissions:
+  contents: write 
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            filename: backend-windows-amd64.exe
+          - goos: darwin
+            goarch: amd64
+            filename: backend-mac-intel
+          - goos: darwin
+            goarch: arm64
+            filename: backend-mac-silicon
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22' 
+          
+      - name: Build Binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: go build -o ${{ matrix.filename }} main.go
+        
+      # 3. This step creates the GitHub Release and attaches the compiled files!
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.filename }}
