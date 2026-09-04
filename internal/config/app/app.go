@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,13 +15,21 @@ import (
 const shutdownTimeout = 15 * time.Second
 
 type App struct {
-	server *server.Server
-	logger *zerolog.Logger
+	container *container
+	server    *server.Server
+	logger    *zerolog.Logger
 }
 
 func New(cfg *config.Config, logger *zerolog.Logger) (*App, error) {
+	c, err := newContainer(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	router := server.NewRouter(cfg, c.middleware, c.handler)
 	return &App{
-		server: server.New(&cfg.Server, router),
+		container: c,
+		server:    server.New(&cfg.Server, router, logger),
+		logger:    logger,
 	}, nil
 }
 
@@ -37,8 +46,16 @@ func (a *App) Run() error {
 	case err := <-serverFailed:
 		return err
 	case sig := <-quit:
-		a.logge
+		a.logger.Info().Str("signal", sig.String()).Msg("shutting down")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
 
-	return nil
+	return a.server.Shutdown(ctx)
+}
+
+func (a *App) Close() {
+	if err := a.container.close(); err != nil {
+		a.logger.Error().Err(err).Msg("failed to close database")
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/bkjonathan/go-authentication/internal/config"
+	"github.com/bkjonathan/go-authentication/internal/config/app"
 	"github.com/bkjonathan/go-authentication/internal/logger"
 	"github.com/rs/zerolog"
 )
@@ -16,9 +17,14 @@ func main() {
 }
 
 func run(log *zerolog.Logger) error {
-	_, err := config.Load()
+	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("Load config: %w", err)
 	}
-	return nil
+	application, err := app.New(cfg, log)
+	if err != nil {
+		return err
+	}
+	defer application.Close()
+	return application.Run()
 }
