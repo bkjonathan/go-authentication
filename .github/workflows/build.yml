@@ -40,7 +40,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-        run: go build -o ${{ matrix.filename }} main.go
+        run: go build -o ${{ matrix.filename }} cmd/api/main.go
         
       # 3. This step creates the GitHub Release and attaches the compiled files!
       - name: Upload to GitHub Release
