@@ -33,14 +33,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22' 
+          go-version-file: 'go.mod'
           
       - name: Build Binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-        run: go build -o ${{ matrix.filename }} cmd/api/main.go
+        run: go build -o ${{ matrix.filename }} ./cmd/api
         
       # 3. This step creates the GitHub Release and attaches the compiled files!
       - name: Upload to GitHub Release
