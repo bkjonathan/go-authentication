@@ -16,7 +16,7 @@ func main() {
 }
 
 func run(log *zerolog.Logger) error {
-	cfg, err := config.Load()
+	_, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("Load config: %w", err)
 	}
