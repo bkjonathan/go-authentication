@@ -29,7 +29,7 @@ func New(cfg *config.ServerConfig, handler http.Handler, logger *zerolog.Logger)
 }
 
 func (s *Server) Start() error {
-	s.logger.Info().Str("address", s.http.Addr).Msg("htt server listening")
+	s.logger.Info().Str("address", s.http.Addr).Msg("http server listening")
 	if err := s.http.ListenAndServe(); err != nil && errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
