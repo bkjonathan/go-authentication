@@ -8,8 +8,9 @@ import (
 )
 
 type Config struct {
-	Server ServerConfig
-	JWT    JWTConfig
+	Server   ServerConfig
+	Database DatabaseConfig
+	JWT      JWTConfig
 }
 
 type ServerConfig struct {
@@ -17,6 +18,14 @@ type ServerConfig struct {
 	GinMode string
 }
 
+type DatabaseConfig struct {
+	Host     string
+	Port     string
+	User     string
+	Password string
+	Name     string
+	SSLMode  string
+}
 type JWTConfig struct {
 	Secret              string
 	ExpiresIn           time.Duration
@@ -32,6 +41,14 @@ func Load() (*Config, error) {
 		Server: ServerConfig{
 			Port:    getEnv("PORT", "8090"),
 			GinMode: getEnv("GIN_MODE", "debug"),
+		},
+		Database: DatabaseConfig{
+			Host:     getEnv("DB_HOST", "localhost"),
+			Port:     getEnv("DB_PORT", "5432"),
+			User:     getEnv("DB_USER", "postgres"),
+			Password: getEnv("DB_PASSWORD", "password"),
+			Name:     getEnv("DB_NAME", "go_auth"),
+			SSLMode:  getEnv("DB_SSLMODE", "disable"),
 		},
 		JWT: JWTConfig{
 			Secret:              getEnv("JWT_SECRET", "you_jwt_secret_key"),
