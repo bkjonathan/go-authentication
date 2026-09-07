@@ -16,9 +16,9 @@ import (
 	"os"
 	"regexp"
 
-	"github.com/bkjonathan/go-authentication/cmd/schema/models"
 	"github.com/bkjonathan/go-authentication/internal/config"
 	"github.com/bkjonathan/go-authentication/internal/database"
+	"github.com/bkjonathan/go-authentication/internal/models"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

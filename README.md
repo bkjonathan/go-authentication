@@ -4,21 +4,110 @@ A JWT authentication API in Go, built as a learning project. Gin for HTTP,
 zerolog for logging, and a hand-written composition root instead of a DI
 framework.
 
-**Status: v1.0.0, the foundation.** The runtime skeleton is complete —
-configuration, logging, the HTTP server with graceful shutdown, CORS, a health
-check, and a Postgres connection opened at startup and closed on the way out.
-The database schema — users, refresh tokens, password reset tokens — is
-described by GORM models in [`cmd/schema/models/`](cmd/schema/models/) and
-applied by versioned Atlas migrations. The authentication itself (registration,
-login, token issuing and refresh, the protected routes) is not written yet.
-[`ARCHITECTURE.md`](ARCHITECTURE.md) describes the layered shape the code is
-growing into; the repository and service layers do not exist in the tree today.
+**Status: v1.1.0, authentication.** Registration, sign-in, token rotation and
+session management are in, on top of the v1.0.0 skeleton — configuration,
+logging, the HTTP server with graceful shutdown, CORS, a health check, and a
+Postgres connection opened at startup and closed on the way out. The schema is
+described by GORM models in [`internal/models/`](internal/models/) and applied
+by versioned Atlas migrations. The layers [`ARCHITECTURE.md`](ARCHITECTURE.md)
+describes — repositories, services, DTOs, handlers — all exist in the tree now.
 
-## What works today
+Not written yet: password reset (the table is there, the flow needs somewhere to
+send mail) and tests.
 
-| Method | Path      | Response              |
-| ------ | --------- | --------------------- |
-| `GET`  | `/health` | `{"status":"ok"}`     |
+## The API
+
+Every response is wrapped: `{"success":true,"data":…}` or
+`{"success":false,"error":{"code":…,"message":…,"fields":…}}`.
+
+| Method   | Path                        | Auth   | Does                                              |
+| -------- | --------------------------- | ------ | ------------------------------------------------- |
+| `GET`    | `/health`                   | —      | `{"status":"ok"}`                                  |
+| `POST`   | `/api/v1/auth/register`     | —      | Creates the account and signs it in.               |
+| `POST`   | `/api/v1/auth/login`        | —      | Opens a session on this device.                    |
+| `POST`   | `/api/v1/auth/refresh`      | token  | Rotates the refresh token, returns a new pair.     |
+| `POST`   | `/api/v1/auth/logout`       | token  | Ends the session that token belongs to.            |
+| `GET`    | `/api/v1/auth/me`           | bearer | The signed-in account.                             |
+| `POST`   | `/api/v1/auth/change-password` | bearer | Changes it, ends every session, opens a new one. |
+| `GET`    | `/api/v1/sessions`          | bearer | Every device signed in, `current` marking this one.|
+| `DELETE` | `/api/v1/sessions/:id`      | bearer | Signs one device out.                              |
+| `DELETE` | `/api/v1/sessions`          | bearer | Signs every *other* device out.                    |
+
+"bearer" means `Authorization: Bearer <accessToken>`. "token" means the refresh
+token in the body — those two work whether or not the access token has expired.
+
+### Signing in
+
+```sh
+curl -s localhost:3000/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"ada@example.com","password":"correct-horse",
+       "firstName":"Ada","lastName":"Lovelace"}'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "user": { "id": "…", "email": "ada@example.com", "role": "staff", "status": "active" },
+    "tokens": {
+      "tokenType": "Bearer",
+      "accessToken": "eyJhbGciOiJIUzI1NiIs…",
+      "refreshToken": "soVkxc9zN1Wie5It1vsnAdf9qSwRbCjgUJQjHNSH92I",
+      "expiresAt": "2026-09-06T12:03:33Z",
+      "refreshExpiresAt": "2026-10-05T12:03:33Z"
+    }
+  }
+}
+```
+
+`POST /api/v1/auth/login` returns the same shape. Sign in from a second device
+and you get a second, independent session — neither one disturbs the other.
+
+### Managing sessions
+
+```sh
+curl -s localhost:3000/api/v1/sessions -H "Authorization: Bearer $ACCESS"
+```
+
+```json
+{
+  "success": true,
+  "data": [
+    { "id": "6fd0b411-…", "current": false, "userAgent": "Dart/3.5 MyApp/1.2 iPhone",
+      "ipAddress": "203.0.113.7", "lastUsedAt": "…", "expiresAt": "…" },
+    { "id": "12e64aaf-…", "current": true,  "userAgent": "Mozilla/5.0 … Chrome/141",
+      "ipAddress": "198.51.100.4", "lastUsedAt": "…", "expiresAt": "…" }
+  ]
+}
+```
+
+`DELETE /api/v1/sessions/6fd0b411-…` signs the phone out. `DELETE
+/api/v1/sessions` signs out everything except the device asking.
+
+### Refreshing
+
+```sh
+curl -s localhost:3000/api/v1/auth/refresh \
+  -H 'Content-Type: application/json' \
+  -d "{\"refreshToken\":\"$REFRESH\"}"
+```
+
+Each refresh returns a new pair and kills the old refresh token. Presenting a
+refresh token twice revokes that whole session — see
+[rotation](ARCHITECTURE.md#rotation-and-what-a-replayed-token-means) for why.
+
+### Sign-in failures
+
+| Status | Code                    | When                                                    |
+| ------ | ----------------------- | ------------------------------------------------------- |
+| `400`  | `validation_failed`     | A field broke a rule; `fields` says which and why.       |
+| `401`  | `invalid_credentials`   | Wrong password, or no such account — deliberately the same answer for both. |
+| `401`  | `invalid_refresh_token` | Spent, expired, revoked, or never existed.               |
+| `401`  | `invalid_token` / `missing_token` | The access token is absent, malformed, forged or expired. |
+| `403`  | `account_suspended` / `account_pending` | The status forbids signing in.        |
+| `409`  | `email_taken`           | Already registered.                                      |
+| `423`  | `account_locked`        | Too many failed attempts. Only ever shown to someone who then got the password right. |
 
 ## Requirements
 
@@ -62,22 +151,17 @@ requests get up to 15 seconds to finish, then the process exits.
 
 ## Database schema
 
-The GORM structs in [`cmd/schema/models/`](cmd/schema/models/) are the only
+The GORM structs in [`internal/models/`](internal/models/) are the only
 definition of the schema. Nothing else describes a table — the migration files
 are generated from the models, never written by hand.
 
-They live next to the tool that reads them rather than under `internal/`
-because nothing in the API imports them yet: today the models exist to generate
-SQL. When the repository layer arrives and the API starts loading rows, they
-move to `internal/models` and `cmd/schema` imports them from there.
-
 | Table | Model | Holds |
 | --- | --- | --- |
-| `users` | [`user.go`](cmd/schema/models/user.go) | Account, credentials, role, status, lockout counters. |
-| `refresh_tokens` | [`refresh_token.go`](cmd/schema/models/refresh_token.go) | One row per issued refresh token, in rotation families, with a revocation reason. |
-| `password_reset_tokens` | [`password_reset_token.go`](cmd/schema/models/password_reset_token.go) | One row per reset request; single use. |
+| `users` | [`user.go`](internal/models/user.go) | Account, credentials, role, status, lockout counters. |
+| `refresh_tokens` | [`refresh_token.go`](internal/models/refresh_token.go) | One row per issued refresh token, in rotation families, with a revocation reason. A family is a session. |
+| `password_reset_tokens` | [`password_reset_token.go`](internal/models/password_reset_token.go) | One row per reset request; single use. |
 
-Every table embeds [`Base`](cmd/schema/models/base.go): a UUID primary key
+Every table embeds [`Base`](internal/models/base.go): a UUID primary key
 minted before insert, `created_at` / `updated_at`, a soft-delete `deleted_at`,
 and a `version` counter incremented in SQL on every update.
 
@@ -95,9 +179,9 @@ role *is* the authorisation, and a route guard asks for the roles it accepts.
 | `staff` | The default for a new account. |
 
 The constants and the validity check live in
-[`cmd/schema/models/role.go`](cmd/schema/models/role.go); the check constraint
+[`internal/models/role.go`](internal/models/role.go); the check constraint
 `chk_users_role` keeps the same four values true in the database. `Status` in
-[`user_status.go`](cmd/schema/models/user_status.go) is a separate axis: the
+[`user_status.go`](internal/models/user_status.go) is a separate axis: the
 role says what an account may do, the status says whether it may sign in at all.
 
 ## Migrations
@@ -143,10 +227,10 @@ wiped with `make docker-reset`:
 
 Never edit an applied migration — add a new one:
 
-1. **Edit the model.** Change a struct in `cmd/schema/models/`, or add a file
+1. **Edit the model.** Change a struct in `internal/models/`, or add a file
    for a new table.
 2. **Register a new table.** Add it to `All()` in
-   [`models.go`](cmd/schema/models/models.go), *after* every table it
+   [`models.go`](internal/models/models.go), *after* every table it
    references — the list is the order the tables are created in.
 3. **Generate the migration.** `make db-diff name=add_wishlist`. The name
    becomes the filename, so make it describe the change. This rebuilds the
@@ -180,7 +264,10 @@ project root is loaded if present, and real environment variables win over it.
 | `GIN_MODE`                | `debug`                 | Gin's mode: `debug`, `release`, or `test`. Anything other than `release` also turns on human-readable console logging. |
 | `JWT_SECRET`              | `you_jwt_secret_key`    | Signing key for access tokens. Replace it before this runs anywhere real. |
 | `JWT_EXPIRES_IN`          | `24h`                   | Access token lifetime, as a Go duration.            |
-| `REFRESH_TOKEN_EXPIRES_IN`| `720h`                  | Refresh token lifetime, as a Go duration.           |
+| `REFRESH_TOKEN_EXPIRES_IN`| `720h`                  | Refresh token lifetime, as a Go duration. Also how long an idle session survives. |
+| `BCRYPT_COST`             | `12`                    | Password hashing cost. Higher is slower to attack and slower to sign in. |
+| `MAX_FAILED_LOGIN_ATTEMPTS`| `5`                    | Consecutive failures that lock an account. `0` disables locking. |
+| `LOCKOUT_DURATION`        | `15m`                   | How long a locked account stays locked, as a Go duration. |
 | `DB_HOST`                 | `localhost`             | Postgres host.                                      |
 | `DB_PORT`                 | `5432`                  | Postgres port. Also the port the container publishes.|
 | `DB_USER`                 | `postgres`              | Postgres user.                                      |
@@ -224,9 +311,9 @@ cmd/
   api/                   entry point: load config, build the app, run it
   schema/
     main.go              rebuilds the shadow schema Atlas diffs against
-    models/              the GORM structs - the schema is generated from these
     migrations/          generated SQL, applied in order
 internal/
+  models/                the GORM structs - the schema is generated from these
   config/                environment variables parsed into a struct
     app/                 the composition root
       app.go             wiring, signal handling, graceful shutdown
@@ -235,8 +322,14 @@ internal/
   server/
     server.go            the http.Server and its timeouts
     router.go            the route table
-  handlers/              HTTP handlers (currently an empty Registry)
-  middleware/            CORS today; auth guards to come
+    handle.go            renders a handler's error, in one place
+  handlers/              bind, delegate, return
+  services/              credentials, lockouts, rotation, sessions
+  repositories/          every query, behind an interface per aggregate
+  dto/                   request and response bodies - the API contract
+  apperror/              failures described in HTTP terms
+  utils/                 envelope, binding, validation, JWT, password hashing
+  middleware/            CORS, authentication, the role guard
   logger/                zerolog setup
 docker/                  the Postgres service used in development
 atlas.hcl                the three states Atlas compares
@@ -249,8 +342,6 @@ hand-written container instead of `wire` or `fx`.
 
 ## Next up
 
-- Repository layer over the existing models
-- Register and login handlers, password hashing
-- Access and refresh token issuing, and the middleware that verifies them
-- A role guard on the protected routes
 - Tests
+- Password reset, once there is somewhere to send the mail
+- Purging refresh tokens that expired long ago

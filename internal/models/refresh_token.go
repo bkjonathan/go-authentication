@@ -12,12 +12,17 @@ const TokenDigestLength = 64
 // IPv6 in its longest textual form, including an IPv4 tail.
 const IPAddressMaxLength = 45
 
+// What the user_agent column holds. A header longer than this is stored
+// truncated rather than rejected - it is a label for a human reading their own
+// session list, not data anything depends on.
+const UserAgentMaxLength = 255
+
 type RefreshToken struct {
 	Base
 
 	UserID            uuid.UUID         `gorm:"type:uuid;not null;index:idx_refresh_tokens_user_id_revoked_at,priority:1" json:"userId"`
 	FamilyID          uuid.UUID         `gorm:"type:uuid;not null;index:idx_refresh_tokens_family_id_revoked_at,priority:1" json:"familyId"`
-	TokenDigest       string            `gorm:"type:char(64);not null" json:"-"`
+	TokenDigest       string            `gorm:"type:char(64);not null;uniqueIndex:idx_refresh_tokens_token_digest" json:"-"`
 	ExpiresAt         time.Time         `gorm:"type:timestamptz;not null;index:idx_refresh_tokens_expires_at" json:"expiresAt"`
 	RevokedAt         *time.Time        `gorm:"type:timestamptz;index:idx_refresh_tokens_user_id_revoked_at,priority:2;index:idx_refresh_tokens_family_id_revoked_at,priority:2" json:"revokedAt"`
 	RevokedReason     *RevocationReason `gorm:"type:varchar(32);check:chk_refresh_tokens_revoked_reason,revoked_reason IS NULL OR revoked_reason IN ('rotated','signed_out','password_changed','reuse_detected','admin_revoked')" json:"revokedReason"`

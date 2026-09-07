@@ -25,7 +25,7 @@ func New(cfg *config.Config, logger *zerolog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	router := server.NewRouter(cfg, c.middleware, c.handler)
+	router := server.NewRouter(cfg, c.middleware, c.handler, logger)
 	return &App{
 		container: c,
 		server:    server.New(&cfg.Server, router, logger),

@@ -8,7 +8,7 @@ only knows about the one below it:
                              |
                              v
    +-- the HTTP layer: knows gin, knows no SQL ----------------------+
-   |  server       the route table, the Handle wrappers, the server  |
+   |  server       the route table, the error wrapper, the server    |
    |  middleware   CORS, authentication, the role guard              |
    |  handlers     bind, delegate, return                            |
    +-----------------------------------------------------------------+
@@ -34,27 +34,25 @@ Two rules keep it honest:
 
 ## The packages
 
-Marked *(planned)* means the layer is described here but is not in the tree yet.
-
 | Package | Holds | Depends on |
 | --- | --- | --- |
 | `cmd/api` | The entry point. Loads config, hands over to `app`. | `app`, `config`, `logger` |
 | `cmd/schema` | The schema tool: rebuilds the shadow schema Atlas diffs against. | `models`, `config`, `database` |
-| `cmd/schema/models` | The GORM structs. The database schema is generated from these. | — |
 | `cmd/schema/migrations` | Generated SQL, applied in order. Not code. | — |
+| `internal/models` | The GORM structs. The database schema is generated from these. | — |
 | `internal/config/app` | The composition root: builds the graph, runs it, shuts it down. | everything |
-| `internal/server` | The router - the whole route table - the `Handle` wrappers, and the HTTP server. | `handlers`, `middleware`, `config` |
-| `internal/handlers` | One handler type per area of the API. Thin: bind, delegate, return. | `services`, `middleware`, `dto` |
-| `internal/middleware` | CORS, authentication, the role guard, and who the caller is. | `config`, `models`, `utils` |
+| `internal/server` | The router - the whole route table - the error wrapper every route goes through, and the HTTP server. | `handlers`, `middleware`, `utils`, `apperror`, `config` |
+| `internal/handlers` | One handler type per area of the API. Thin: bind, delegate, return. | `services`, `middleware`, `dto`, `utils` |
+| `internal/middleware` | CORS, authentication, the role guard, and who the caller is. | `models`, `utils`, `apperror` |
 | `internal/database` | Opens the GORM connection, and renders the DSN both binaries share. | `config` |
 | `internal/logger` | zerolog setup. | — |
 | `internal/config` | Environment variables, parsed once into a struct. | — |
-| `internal/services` *(planned)* | Business logic. One service per area of the domain. | `repositories`, `dto`, `apperror` |
-| `internal/repositories` *(planned)* | Every database query, behind an interface per aggregate. | `models`, `gorm` |
-| `internal/dto` *(planned)* | Request and response bodies. The API contract. | — |
-| `internal/apperror` *(planned)* | Failures described in HTTP terms. | — |
+| `internal/services` | Business logic. One service per area of the domain. | `repositories`, `dto`, `models`, `utils`, `apperror`, `config` |
+| `internal/repositories` | Every database query, behind an interface per aggregate. | `models`, `gorm` |
+| `internal/dto` | Request and response bodies. The API contract, and the mapping from a model to one. | `models` |
+| `internal/apperror` | Failures described in HTTP terms. | — |
+| `internal/utils` | Response envelope, request binding, validation messages, JWT, password hashing. | `models`, `apperror` |
 | `internal/providers` *(planned)* | Adapters for the outside world (local disk, S3). | `config` |
-| `internal/utils` *(planned)* | Response envelope, validation messages, JWT, hashing, pagination. | — |
 
 ## The schema lives in one place
 
@@ -64,12 +62,11 @@ models into a scratch schema, Atlas diffs that against the migration directory,
 and the difference is the migration. Describing a table twice is how the two
 descriptions start disagreeing, so the project describes it once.
 
-`cmd/schema/models` sits under the binary that reads it because that binary is
-its only importer today — nothing in the API loads a row yet. When the
-repository layer lands the models move to `internal/models`, `cmd/schema`
-imports them from there, and nothing else about the arrangement changes. The
-table in the previous section already names `models` as the dependency the
-`repositories` and `middleware` layers will take.
+The models live in `internal/models`. They moved there from under `cmd/schema`
+when the repository layer landed and the API started loading rows: `cmd/schema`
+is no longer their only importer, so sitting under it would have been
+misleading. It imports them from there and nothing else about the arrangement
+changed.
 
 [`README.md`](README.md#migrations) has the workflow: the three states Atlas
 compares, setting up a new database, and generating a migration from a model
@@ -105,12 +102,17 @@ Everything is constructor-injected, and the whole graph is built in one place:
 ```go
 store := repositories.NewStore(db)
 
-userService := services.NewUserService(store.Users, store.RefreshTokens)
+authService := services.NewAuthService(store, tokens, hasher, refreshTTL, cfg.Auth)
 
 registry := &handlers.Registry{
-    Auth: handlers.NewAuthHandler(userService),
+    Auth: handlers.NewAuthHandler(authService),
 }
 ```
+
+A service takes the whole `*Store` rather than the repositories it uses one by
+one, because anything that writes to two tables needs `Store.Atomic` as well as
+the repositories — see [Transactions](#transactions). The fields on `Store` are
+interfaces, so a test still hands it fakes.
 
 Nothing below the container constructs its own dependencies, and nothing reads
 a global. That is what makes a service testable: hand it a fake repository and
@@ -150,8 +152,43 @@ boilerplate the compiler cannot check against anything. If handler tests ever
 need to fake one, add the interface then — it is a two-line change.
 
 The Go convention "accept interfaces, return structs" is what the constructors
-follow: `NewUserService` takes repository interfaces and returns a
-`*UserService`.
+follow: `NewAuthService` takes a store of repository interfaces and returns a
+`*AuthService`.
+
+## A session is a refresh token family
+
+There is no `sessions` table. A session is a `family_id` in `refresh_tokens`:
+signing in mints a new family, and every rotation writes another row into the
+same one. Rotation revokes the row it replaces, so a family contains exactly one
+unrevoked token at a time — which makes "list my sessions" a single indexed
+query for the user's unrevoked, unexpired tokens, one row per device.
+
+That row is also where the device is described. `user_agent` and `ip_address`
+are written on every issue, so the list shows where each session was last used
+rather than where it started, and the access token carries its `family_id` as
+`sid` so the caller's own entry can be marked `current`.
+
+Because families are independent, signing in on a phone does not disturb a
+laptop, and ending one session leaves the others alone. Three operations use
+that: revoke one family (sign out this device), revoke every family but one
+(sign out my other devices), revoke all (the password changed).
+
+### Rotation, and what a replayed token means
+
+A refresh token is 256 bits of randomness. The database stores only its SHA-256
+digest, so a leaked backup contains nothing that can be presented.
+
+Refreshing revokes the presented token and issues a replacement in the same
+family, linked by `replaced_by_token_id`. The revoke is
+`UPDATE ... WHERE id = ? AND revoked_at IS NULL` and the rotation only continues
+if it affected a row, so two requests racing on one token cannot both get a
+replacement.
+
+A token that is *already* revoked coming back is the case the whole design
+exists for: the client was supposed to have thrown it away, so a second copy is
+in circulation and there is no way to tell whether the legitimate client or the
+thief is holding the current one. The entire family is revoked with
+`reuse_detected`, and that device has to sign in again.
 
 ## Transactions
 
@@ -160,11 +197,12 @@ store handed to the callback is bound to the transaction, so every repository
 call inside it commits or rolls back as one:
 
 ```go
-err := s.store.Atomic(func(tx *repositories.Store) error {
-    if err := tx.Users.Create(&user); err != nil {
+err := s.store.Atomic(ctx, func(tx *repositories.Store) error {
+    if err := tx.Users.UpdatePassword(ctx, user.ID, hash, now); err != nil {
         return err
     }
-    return tx.RefreshTokens.RevokeFamily(familyID, models.RevocationReasonPasswordChanged)
+    _, err := tx.RefreshTokens.RevokeUser(ctx, user.ID, models.RevocationReasonPasswordChanged, now, nil)
+    return err
 })
 ```
 
@@ -177,8 +215,8 @@ indistinguishable from token theft.
 
 A wishlist, end to end:
 
-1. **Model** — `cmd/schema/models/wishlist.go`, registered in `All()` in
-   [`models.go`](cmd/schema/models/models.go), then
+1. **Model** — `internal/models/wishlist.go`, registered in `All()` in
+   [`models.go`](internal/models/models.go), then
    `make db-diff name=add_wishlist` and `make migrate-up`.
 2. **Repository** — `internal/repositories/wishlist_repository.go`: the
    `WishlistRepository` interface plus its gorm implementation. Add it to

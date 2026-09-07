@@ -20,6 +20,10 @@ func New(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 
 	db, err := gorm.Open(postgres.Open(DSN(cfg)), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
+		// Reports a unique-index violation as gorm.ErrDuplicatedKey rather than
+		// a driver-specific code, so a repository can recognise "already taken"
+		// without knowing it is talking to Postgres.
+		TranslateError: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)

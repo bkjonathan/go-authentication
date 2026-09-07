@@ -7,6 +7,9 @@ import (
 	"github.com/bkjonathan/go-authentication/internal/database"
 	"github.com/bkjonathan/go-authentication/internal/handlers"
 	"github.com/bkjonathan/go-authentication/internal/middleware"
+	"github.com/bkjonathan/go-authentication/internal/repositories"
+	"github.com/bkjonathan/go-authentication/internal/services"
+	"github.com/bkjonathan/go-authentication/internal/utils"
 	"github.com/rs/zerolog"
 	"gorm.io/gorm"
 )
@@ -22,11 +25,30 @@ func newContainer(cfg *config.Config, logger *zerolog.Logger) (*container, error
 	if err != nil {
 		return nil, fmt.Errorf("connect database %w", err)
 	}
+
+	// Shared plumbing
+	tokens := utils.NewTokenIssuer(cfg.JWT.Secret, cfg.JWT.ExpiresIn)
+	hasher, err := utils.NewPasswordHasher(cfg.Auth.BcryptCost)
+	if err != nil {
+		return nil, err
+	}
+
+	// Data layer
+	store := repositories.NewStore(db)
+
+	// Business layer
+	authService := services.NewAuthService(store, tokens, hasher, cfg.JWT.RefreshTokenExpires, cfg.Auth)
+	sessionService := services.NewSessionService(store)
+
 	// HTTP layer
-	register := &handlers.Registry{}
+	register := &handlers.Registry{
+		Auth:     handlers.NewAuthHandler(authService),
+		Sessions: handlers.NewSessionHandler(sessionService),
+	}
+
 	return &container{
 		db:         db,
-		middleware: middleware.New(&cfg.JWT),
+		middleware: middleware.New(tokens),
 		handler:    register,
 	}, nil
 }

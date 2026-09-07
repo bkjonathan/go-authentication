@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -11,6 +12,7 @@ type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	JWT      JWTConfig
+	Auth     AuthConfig
 }
 
 type ServerConfig struct {
@@ -32,11 +34,20 @@ type JWTConfig struct {
 	RefreshTokenExpires time.Duration
 }
 
+// AuthConfig is the cost of a password hash and the shape of the lockout: how
+// many failures in a row close an account, and for how long.
+type AuthConfig struct {
+	BcryptCost             int
+	MaxFailedLoginAttempts int
+	LockoutDuration        time.Duration
+}
+
 func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	jwtExpiresIn, _ := time.ParseDuration(getEnv("JWT_EXPIRES_IN", "24h"))
 	refreshTokenExpires, _ := time.ParseDuration(getEnv("REFRESH_TOKEN_EXPIRES_IN", "720h"))
+	lockoutDuration, _ := time.ParseDuration(getEnv("LOCKOUT_DURATION", "15m"))
 	return &Config{
 		Server: ServerConfig{
 			Port:    getEnv("PORT", "8090"),
@@ -55,6 +66,11 @@ func Load() (*Config, error) {
 			ExpiresIn:           jwtExpiresIn,
 			RefreshTokenExpires: refreshTokenExpires,
 		},
+		Auth: AuthConfig{
+			BcryptCost:             getEnvInt("BCRYPT_COST", 12),
+			MaxFailedLoginAttempts: getEnvInt("MAX_FAILED_LOGIN_ATTEMPTS", 5),
+			LockoutDuration:        lockoutDuration,
+		},
 	}, nil
 }
 
@@ -63,4 +79,12 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	value, err := strconv.Atoi(os.Getenv(key))
+	if err != nil {
+		return defaultValue
+	}
+	return value
 }

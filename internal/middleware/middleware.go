@@ -3,16 +3,16 @@ package middleware
 import (
 	"net/http"
 
-	"github.com/bkjonathan/go-authentication/internal/config"
+	"github.com/bkjonathan/go-authentication/internal/utils"
 	"github.com/gin-gonic/gin"
 )
 
 type Middleware struct {
-	jwtSecret string
+	tokens *utils.TokenIssuer
 }
 
-func New(jwtCfg *config.JWTConfig) *Middleware {
-	return &Middleware{jwtSecret: jwtCfg.Secret}
+func New(tokens *utils.TokenIssuer) *Middleware {
+	return &Middleware{tokens: tokens}
 }
 
 func (m *Middleware) CORS() gin.HandlerFunc {
